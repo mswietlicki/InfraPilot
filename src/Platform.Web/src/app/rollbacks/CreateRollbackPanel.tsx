@@ -85,14 +85,16 @@ export function CreateRollbackPanel({
       .catch(() => setVersions([]));
   }, [mode, product, targetEnv, manualService]);
 
-  // Reset any stale preview when the inputs that shape it change.
+  // Reset any stale preview when the inputs that shape it change. NOTE: `excluded` is
+  // intentionally NOT here — it's a client-side selection over an existing preview, so toggling
+  // a service's checkbox must not wipe the list (it would force a re-preview every click).
   useEffect(() => {
     setPreview(null);
-  }, [product, targetEnv, mode, referenceEnv, manualVersion, excluded]);
+  }, [product, targetEnv, mode, referenceEnv, manualVersion]);
 
   const envOptions = useMemo(() => environments.map((e) => e.key), [environments]);
 
-  const buildBody = (): RollbackInput => {
+  const buildBody = (applyExclusions: boolean): RollbackInput => {
     const body: RollbackInput = {
       product,
       targetEnv,
@@ -101,7 +103,9 @@ export function CreateRollbackPanel({
     };
     if (mode === 'Align') {
       body.referenceEnv = referenceEnv;
-      body.exclude = Array.from(excluded);
+      // Preview shows every differing service; exclusions are applied only at create time so
+      // ticking a checkbox is a pure client-side selection (no re-preview needed).
+      body.exclude = applyExclusions ? Array.from(excluded) : [];
     } else {
       body.items = manualService && manualVersion
         ? [{ service: manualService, toVersion: manualVersion }]
@@ -121,7 +125,7 @@ export function CreateRollbackPanel({
     setError(null);
     setPreviewing(true);
     try {
-      const result = await api.previewRollback(buildBody());
+      const result = await api.previewRollback(buildBody(false));
       setPreview(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Preview failed');
@@ -135,7 +139,7 @@ export function CreateRollbackPanel({
     setError(null);
     setSubmitting(true);
     try {
-      await api.createRollback(buildBody());
+      await api.createRollback(buildBody(true));
       onCreated();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create rollback');
@@ -144,7 +148,9 @@ export function CreateRollbackPanel({
     }
   };
 
-  const eligibleCount = preview?.items.filter((i) => i.eligible).length ?? 0;
+  // Eligible = backend-eligible AND not unchecked by the operator. Recomputes live as checkboxes
+  // toggle, so the count and the Create button reflect the current selection without a re-preview.
+  const eligibleCount = preview?.items.filter((i) => i.eligible && !excluded.has(i.service)).length ?? 0;
 
   return (
     <>
