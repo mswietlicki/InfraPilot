@@ -341,7 +341,9 @@ function RollbackCard({
   const cfg = STATUS_CONFIG[request.status] ?? STATUS_CONFIG.Pending;
   const StatusIcon = cfg.icon;
   const canApprove = request.canApprove && request.status === 'Pending';
-  const cancellable = request.status === 'Pending' || request.status === 'Approved';
+  // Only Pending requests can be cancelled — once Approved, the webhook has fired and the
+  // executor is acting, so there's nothing we can meaningfully recall.
+  const cancellable = request.status === 'Pending';
 
   return (
     <div

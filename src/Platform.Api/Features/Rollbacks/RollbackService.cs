@@ -341,8 +341,13 @@ public class RollbackService
     {
         var request = await _db.RollbackRequests.FirstOrDefaultAsync(r => r.Id == id, ct)
             ?? throw new KeyNotFoundException($"Rollback request {id} not found");
-        if (request.Status is RollbackStatus.RolledBack or RollbackStatus.Rejected or RollbackStatus.Cancelled)
-            throw new InvalidOperationException($"Rollback request is {request.Status}; cannot cancel");
+        // Only Pending requests can be cancelled. Once Approved, the rollback.approved webhook has
+        // already fired and the executor may be acting — cancelling here would change our record
+        // without stopping reality, which is worse than not offering it.
+        if (request.Status != RollbackStatus.Pending)
+            throw new InvalidOperationException(
+                $"Rollback request is {request.Status}; only Pending requests can be cancelled " +
+                "(an approved rollback has already been dispatched).");
         if (!string.Equals(request.CreatedBy, _user.Email, StringComparison.OrdinalIgnoreCase) && !_user.IsAdmin)
             throw new UnauthorizedAccessException("Only the creator or an admin can cancel this rollback");
 

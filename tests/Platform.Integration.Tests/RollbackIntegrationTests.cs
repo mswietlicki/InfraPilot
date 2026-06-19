@@ -93,6 +93,26 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
     }
 
     [Fact]
+    public async Task Cancel_OnApprovedRequest_Rejected()
+    {
+        var product = await FreshEnrolledProductAsync();
+        await IngestAsync(product, "api", "staging", "1.0", Hours(-2));
+        await IngestAsync(product, "api", "staging", "1.1", Hours(-1));
+
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", new
+        {
+            product, targetEnv = "staging", mode = "manual",
+            items = new[] { new { service = "api", toVersion = "1.0" } },
+        }));
+        Assert.Equal("Approved", created.GetProperty("status").GetString()); // auto-approved, webhook fired
+        var id = created.GetProperty("id").GetString();
+
+        // Cancelling an approved (already-dispatched) rollback must be rejected.
+        var cancel = await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/cancel", new { });
+        Assert.Equal(HttpStatusCode.BadRequest, cancel.StatusCode);
+    }
+
+    [Fact]
     public async Task SafetyRule_RejectsVersionThatNeverRanInEnv()
     {
         var product = await FreshEnrolledProductAsync();
