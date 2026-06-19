@@ -177,6 +177,9 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         await SeedPromotionTopologyAndPolicyAsync(product);
         await EnableRollbacksAsync();
 
+        // prod already runs 1.0 so rolling staging back to 1.0 matches prod (no new candidate) —
+        // this isolates the drift-block/reactivation behaviour under test.
+        await IngestAsync(product, "api", "prod", "1.0", Hours(-4));
         // 1.1 lands in staging → a Pending promotion candidate (staging → prod) is created.
         await IngestAsync(product, "api", "staging", "1.0", Hours(-3));
         await IngestAsync(product, "api", "staging", "1.1", Hours(-2));
@@ -198,7 +201,49 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         Assert.Equal("Approved", afterRedeploy.GetProperty("candidate").GetProperty("status").GetString());
     }
 
+    [Fact]
+    public async Task RollbackToVersionAheadOfProd_RecreatesPromotionCandidate()
+    {
+        // prod=1.5, staging=2.0 then a broken 2.1 (2.1 candidate supersedes 2.0). Roll staging back
+        // to 2.0 — since 2.0 still differs from prod (1.5), a staging→prod candidate for 2.0 should
+        // reappear so it can be promoted.
+        var product = $"promo-{Guid.NewGuid():N}";
+        await SeedPromotionTopologyAndPolicyAsync(product);
+        await EnableRollbacksAsync();
+        await EnrollAsync(product);
+
+        await IngestAsync(product, "api", "prod", "1.5", Hours(-5));
+        await IngestAsync(product, "api", "staging", "2.0", Hours(-4));
+        await IngestAsync(product, "api", "staging", "2.1", Hours(-3)); // 2.1 candidate supersedes 2.0
+
+        // Rollback staging 2.1 → 2.0.
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", new
+        {
+            product, targetEnv = "staging", mode = "manual",
+            items = new[] { new { service = "api", toVersion = "2.0" } },
+        }));
+        var rbId = created.GetProperty("id").GetString();
+        // approve if it isn't auto-approved (policy has an approver group)
+        if (created.GetProperty("status").GetString() == "Pending")
+            await _admin.PostAsJsonAsync($"/api/rollbacks/{rbId}/approve", new { });
+        await IngestAsync(product, "api", "staging", "2.0", Hours(-1), isRollback: true); // rollback lands
+
+        // A fresh staging→prod candidate for 2.0 must now be Pending.
+        var promos = await Body(await _admin.GetAsync($"/api/promotions/?product={product}&targetEnv=prod&status=Pending"));
+        var cands = promos.GetProperty("candidates").EnumerateArray()
+            .Select(c => c.GetProperty("version").GetString()).ToList();
+        Assert.Contains("2.0", cands);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
+
+    private async Task EnrollAsync(string product)
+    {
+        var enabled = await GetEnabledProductsAsync();
+        enabled.Add(product);
+        (await _admin.PutAsJsonAsync("/api/rollbacks/admin/enabled-products", new { products = enabled }))
+            .EnsureSuccessStatusCode();
+    }
 
     private async Task EnableRollbacksAsync()
     {

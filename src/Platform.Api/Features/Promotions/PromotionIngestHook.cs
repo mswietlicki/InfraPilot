@@ -81,17 +81,18 @@ public class PromotionIngestHook : IPromotionIngestHook
                 await MatchCompletionAsync(deployEvent, ct);
             }
 
-            // 3) Match any in-flight rollback this event completes. Returns true if it did, in which
-            //    case we must NOT generate forward-promotion candidates for this (older) version —
-            //    even if the operator forgot to set IsRollback on the deploy.
+            // 3) Match any in-flight rollback this event completes (true if it did) — even when the
+            //    operator forgot to set IsRollback on the deploy.
             var rollbackMatched = false;
             if (await _flags.IsEnabled(FeatureFlagKeys.Rollbacks, ct))
                 rollbackMatched = await _rollbacks.MatchCompletionAsync(deployEvent, ct);
 
-            // 4) Generate new promotion candidates for downstream environments — unless this event
-            //    completed a rollback (suppress forward-promotion of the rolled-back version).
-            if (promotionsOn && !rollbackMatched)
-                await GenerateCandidatesAsync(deployEvent, ct);
+            // 4) Generate new promotion candidates for downstream environments. For a rollback we
+            //    still offer to promote the rolled-back-to version when it differs from the target
+            //    env (e.g. staging rolled back to 2.0 while prod is on 1.5 — 2.0 is still shippable);
+            //    CreateCandidateAsync skips only when it already matches the target.
+            if (promotionsOn)
+                await GenerateCandidatesAsync(deployEvent, treatAsRollback: rollbackMatched, ct);
         }
         catch (Exception ex)
         {
@@ -101,14 +102,14 @@ public class PromotionIngestHook : IPromotionIngestHook
         }
     }
 
-    private async Task GenerateCandidatesAsync(DeployEvent source, CancellationToken ct)
+    private async Task GenerateCandidatesAsync(DeployEvent source, bool treatAsRollback, CancellationToken ct)
     {
         var nexts = await _topology.GetNextEnvironmentsAsync(source.Environment, ct);
         if (nexts.Count == 0) return;
 
         foreach (var target in nexts)
         {
-            await _promotions.CreateCandidateAsync(source, target, ct);
+            await _promotions.CreateCandidateAsync(source, target, treatAsRollback, ct);
         }
     }
 

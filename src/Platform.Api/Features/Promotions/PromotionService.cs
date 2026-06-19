@@ -84,12 +84,28 @@ public class PromotionService
     /// in <see cref="PromotionStatus.Approved"/> so downstream executor dispatch can pick it up.</para>
     /// </summary>
     public async Task<PromotionCandidate?> CreateCandidateAsync(
-        DeployEvent source, string targetEnv, CancellationToken ct = default)
+        DeployEvent source, string targetEnv, bool treatAsRollback = false, CancellationToken ct = default)
     {
-        if (source.IsRollback)
+        // A rollback (flagged event, or one that completed a rollback request) only warrants a
+        // forward-promotion candidate when it leaves the source env *ahead of / different from* the
+        // target — e.g. staging rolled back to 2.0 while prod is on 1.5: 2.0 is still shippable, so
+        // the promotion should reappear. If the rolled-back version already matches the target
+        // (rolling back *to* the target's version), there's nothing to promote — skip.
+        if (source.IsRollback || treatAsRollback)
         {
-            _logger.LogInformation("Skipping promotion candidate for rollback event {EventId}", source.Id);
-            return null;
+            var targetCurrent = await _db.DeployEvents.AsNoTracking()
+                .Where(e => e.Product == source.Product && e.Service == source.Service
+                         && e.Environment == targetEnv)
+                .OrderByDescending(e => e.DeployedAt)
+                .Select(e => e.Version)
+                .FirstOrDefaultAsync(ct);
+            if (string.Equals(targetCurrent, source.Version, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation(
+                    "Skipping promotion candidate for rollback event {EventId} — version {Version} already matches {TargetEnv}",
+                    source.Id, LogSanitizer.Clean(source.Version), LogSanitizer.Clean(targetEnv));
+                return null;
+            }
         }
 
         if (!string.Equals(source.Status, "succeeded", StringComparison.OrdinalIgnoreCase))
@@ -691,11 +707,14 @@ public class PromotionService
             .OrderByDescending(e => e.DeployedAt)
             .Select(e => e.Version)
             .FirstOrDefaultAsync(ct);
-        if (!string.Equals(sourceCurrent, candidate.Version, StringComparison.OrdinalIgnoreCase))
+        // Only block on positive evidence of drift: a source deploy exists and runs a *different*
+        // version. No source history (null) means we can't conclude drift, so don't block.
+        if (sourceCurrent is not null
+            && !string.Equals(sourceCurrent, candidate.Version, StringComparison.OrdinalIgnoreCase))
             return new GateResult(false, new[]
             {
                 $"Source environment '{candidate.SourceEnv}' no longer runs {candidate.Version} " +
-                $"(now {sourceCurrent ?? "none"}) — promotion is stale until redeployed",
+                $"(now {sourceCurrent}) — promotion is stale until redeployed",
             });
 
         if (snapshot.IsAutoApprove)
