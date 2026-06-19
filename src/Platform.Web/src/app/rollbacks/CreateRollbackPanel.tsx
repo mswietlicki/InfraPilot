@@ -40,9 +40,11 @@ export function CreateRollbackPanel({
   const [reason, setReason] = useState('');
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
 
-  // Manual mode: single service + chosen target version.
-  const [manualService] = useState(prefill.service);
+  // Manual mode: single service + chosen target version. Prefilled when deep-linked from a
+  // deployment; otherwise the user picks a service from those deployed in the target env.
+  const [manualService, setManualService] = useState(prefill.service);
   const [manualVersion, setManualVersion] = useState('');
+  const [services, setServices] = useState<string[]>([]);
   const [versions, setVersions] = useState<DeploymentVersion[]>([]);
 
   const [preview, setPreview] = useState<RollbackPreview | null>(null);
@@ -57,7 +59,20 @@ export function CreateRollbackPanel({
       .catch(() => setProducts([]));
   }, []);
 
-  // Manual mode: load version history for the prefilled service so the user can
+  // Manual mode (not deep-linked): load the services deployed in the target env so the user
+  // can pick which one to roll back.
+  useEffect(() => {
+    if (mode !== 'Manual' || prefill.service || !product || !targetEnv) {
+      setServices([]);
+      return;
+    }
+    api
+      .getDeploymentState({ product, environment: targetEnv })
+      .then((rows) => setServices([...new Set(rows.map((r) => r.service))].sort()))
+      .catch(() => setServices([]));
+  }, [mode, product, targetEnv, prefill.service]);
+
+  // Manual mode: load version history for the chosen service so the user can
   // pick which version to roll back to.
   useEffect(() => {
     if (mode !== 'Manual' || !product || !targetEnv || !manualService) {
@@ -213,7 +228,8 @@ export function CreateRollbackPanel({
           {mode === 'Manual' && (
             <>
               <Field label="Service">
-                {manualService ? (
+                {prefill.service ? (
+                  // Deep-linked from a deployment — service is fixed.
                   <div
                     className="rounded-lg border px-3 py-2 text-[13px]"
                     style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
@@ -221,9 +237,29 @@ export function CreateRollbackPanel({
                     {manualService}
                   </div>
                 ) : (
-                  <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-                    Open a rollback from a deployment to target a specific service, or use Align mode.
-                  </p>
+                  <select
+                    value={manualService}
+                    onChange={(e) => {
+                      setManualService(e.target.value);
+                      setManualVersion('');
+                    }}
+                    className="w-full rounded-lg border px-3 py-2 text-[13px]"
+                    style={selectStyle}
+                    disabled={!product || !targetEnv || services.length === 0}
+                  >
+                    <option value="">
+                      {!product || !targetEnv
+                        ? 'Pick a product and environment first…'
+                        : services.length === 0
+                          ? 'No services deployed here'
+                          : 'Select a service…'}
+                    </option>
+                    {[...new Set([...(manualService ? [manualService] : []), ...services])].map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
                 )}
               </Field>
               {manualService && (
