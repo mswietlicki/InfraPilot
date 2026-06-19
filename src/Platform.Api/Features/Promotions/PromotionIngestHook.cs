@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Platform.Api.Features.Deployments;
 using Platform.Api.Features.Deployments.Models;
 using Platform.Api.Features.Promotions.Models;
+using Platform.Api.Features.Rollbacks;
 using Platform.Api.Infrastructure.Features;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -37,6 +38,7 @@ public class PromotionIngestHook : IPromotionIngestHook
     private readonly IFeatureFlags _flags;
     private readonly PromotionTopologyService _topology;
     private readonly PromotionService _promotions;
+    private readonly RollbackService _rollbacks;
     private readonly WorkItemSyncService _workItemSync;
     private readonly PlatformDbContext _db;
     private readonly ILogger<PromotionIngestHook> _logger;
@@ -45,6 +47,7 @@ public class PromotionIngestHook : IPromotionIngestHook
         IFeatureFlags flags,
         PromotionTopologyService topology,
         PromotionService promotions,
+        RollbackService rollbacks,
         WorkItemSyncService workItemSync,
         PlatformDbContext db,
         ILogger<PromotionIngestHook> logger)
@@ -52,6 +55,7 @@ public class PromotionIngestHook : IPromotionIngestHook
         _flags = flags;
         _topology = topology;
         _promotions = promotions;
+        _rollbacks = rollbacks;
         _workItemSync = workItemSync;
         _db = db;
         _logger = logger;
@@ -65,17 +69,29 @@ public class PromotionIngestHook : IPromotionIngestHook
     {
         try
         {
-            if (!await _flags.IsEnabled(FeatureFlagKeys.Promotions, ct)) return;
+            var promotionsOn = await _flags.IsEnabled(FeatureFlagKeys.Promotions, ct);
 
-            // 1) Project work-item references into the relational index used by the gate evaluator.
-            await _workItemSync.SyncAsync(deployEvent, ct);
-            await _db.SaveChangesAsync(ct);
+            if (promotionsOn)
+            {
+                // 1) Project work-item references into the relational index used by the gate evaluator.
+                await _workItemSync.SyncAsync(deployEvent, ct);
+                await _db.SaveChangesAsync(ct);
 
-            // 2) Match any in-flight candidate that this event completes.
-            await MatchCompletionAsync(deployEvent, ct);
+                // 2) Match any in-flight promotion candidate that this event completes.
+                await MatchCompletionAsync(deployEvent, ct);
+            }
 
-            // 3) Generate new candidates for downstream environments.
-            await GenerateCandidatesAsync(deployEvent, ct);
+            // 3) Match any in-flight rollback this event completes. Returns true if it did, in which
+            //    case we must NOT generate forward-promotion candidates for this (older) version —
+            //    even if the operator forgot to set IsRollback on the deploy.
+            var rollbackMatched = false;
+            if (await _flags.IsEnabled(FeatureFlagKeys.Rollbacks, ct))
+                rollbackMatched = await _rollbacks.MatchCompletionAsync(deployEvent, ct);
+
+            // 4) Generate new promotion candidates for downstream environments — unless this event
+            //    completed a rollback (suppress forward-promotion of the rolled-back version).
+            if (promotionsOn && !rollbackMatched)
+                await GenerateCandidatesAsync(deployEvent, ct);
         }
         catch (Exception ex)
         {

@@ -106,6 +106,25 @@ public class PromotionService
             return null;
         }
 
+        // Idempotent reactivation: if a non-terminal candidate already exists for this exact
+        // (product, service, source→target, version), reuse it instead of creating a duplicate.
+        // This is what lets a *redeploy* of a previously-rolled-back version re-establish the
+        // version in the source env and reactivate the original candidate (re-evaluating clears the
+        // "source drifted" gate block) rather than minting a new one that loses the approval trail.
+        var existing = await _db.PromotionCandidates.FirstOrDefaultAsync(c =>
+            c.Product == source.Product && c.Service == source.Service
+            && c.SourceEnv == source.Environment && c.TargetEnv == targetEnv && c.Version == source.Version
+            && (c.Status == PromotionStatus.Pending || c.Status == PromotionStatus.Approved
+                || c.Status == PromotionStatus.Deploying), ct);
+        if (existing is not null)
+        {
+            _logger.LogInformation(
+                "Reusing existing candidate {CandidateId} for redeployed version {Version} (no duplicate)",
+                existing.Id, source.Version);
+            if (existing.Status == PromotionStatus.Pending) await ReevaluateAsync(existing.Id, ct);
+            return existing;
+        }
+
         var snapshot = await _resolver.SnapshotAsync(source.Product, source.Service, targetEnv, ct);
 
         // AutoApproveWhenNoTickets: if the source event carries no work-item references and the
@@ -660,6 +679,25 @@ public class PromotionService
         ResolvedPolicySnapshot snapshot,
         CancellationToken ct)
     {
+        // Source-drift invariant: a candidate is only promotable while its source environment is
+        // still running the candidate's version. If the source was rolled back (or otherwise moved
+        // off this version), block — promoting would push a version no live env runs. This clears
+        // automatically once the source is redeployed to the version (see idempotent reactivation
+        // in CreateCandidateAsync). Checked before auto-approve so even auto policies can't promote
+        // a drifted version.
+        var sourceCurrent = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == candidate.Product && e.Service == candidate.Service
+                     && e.Environment == candidate.SourceEnv)
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => e.Version)
+            .FirstOrDefaultAsync(ct);
+        if (!string.Equals(sourceCurrent, candidate.Version, StringComparison.OrdinalIgnoreCase))
+            return new GateResult(false, new[]
+            {
+                $"Source environment '{candidate.SourceEnv}' no longer runs {candidate.Version} " +
+                $"(now {sourceCurrent ?? "none"}) — promotion is stale until redeployed",
+            });
+
         if (snapshot.IsAutoApprove)
             return new GateResult(true, Array.Empty<string>());
 
