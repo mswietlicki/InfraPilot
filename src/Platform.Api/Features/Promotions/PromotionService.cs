@@ -91,7 +91,8 @@ public class PromotionService
         // target — e.g. staging rolled back to 2.0 while prod is on 1.5: 2.0 is still shippable, so
         // the promotion should reappear. If the rolled-back version already matches the target
         // (rolling back *to* the target's version), there's nothing to promote — skip.
-        if (source.IsRollback || treatAsRollback)
+        var isRollback = source.IsRollback || treatAsRollback;
+        if (isRollback)
         {
             var targetCurrent = await _db.DeployEvents.AsNoTracking()
                 .Where(e => e.Product == source.Product && e.Service == source.Service
@@ -172,10 +173,17 @@ public class PromotionService
             ApprovedAt = effectiveAutoApprove ? now : null,
         };
 
-        // Supersede any still-pending candidate for the same service+edge — a newer version wins.
-        // The fresh candidate inherits their source deploy-event IDs so the UI can surface work
-        // items, PRs, and participants that were part of superseded predecessors.
-        candidate.SupersededSourceEventIds = await SupersedeStalePendingAsync(candidate, ct);
+        // Supersede any still-pending candidate for the same service+edge — keep that side-effect
+        // either way (the old candidate is no longer the active one).
+        var inherited = await SupersedeStalePendingAsync(candidate, ct);
+
+        // Forward deploy: inherit the superseded predecessors' events (a newer version *includes*
+        // the older changes). Rollback: do NOT inherit — those newer stories were reverted. Instead
+        // bundle the work items that actually ship by promoting this version, i.e. the diff between
+        // the target env's current version and this one.
+        candidate.SupersededSourceEventIds = isRollback
+            ? await ComputeRollbackBundleAsync(source, targetEnv, ct)
+            : inherited;
 
         _db.PromotionCandidates.Add(candidate);
 
@@ -232,6 +240,57 @@ public class PromotionService
         }
 
         return candidate;
+    }
+
+    /// <summary>
+    /// Builds the "what ships if you promote this version" bundle for a rollback/redeploy candidate:
+    /// the source-env deploy events for every version introduced *after* the target env's current
+    /// version, up to and including the rolled-back-to version. Work items are read across that
+    /// bundle by the gate evaluator / UI, so the promotion reflects the true diff against the target.
+    ///
+    /// <para>Ordering uses each version's <b>first-seen</b> deploy time in the source env — not the
+    /// rollback's own (later) timestamp — so rolling back to 1.3 after 1.4 shipped correctly
+    /// excludes 1.4 (its first-seen is after 1.3's), while a later roll-forward to 1.4 includes both.</para>
+    /// </summary>
+    private async Task<List<Guid>> ComputeRollbackBundleAsync(
+        DeployEvent source, string targetEnv, CancellationToken ct)
+    {
+        // The version the target env currently runs — the lower bound of the diff.
+        var targetVersion = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == source.Product && e.Service == source.Service && e.Environment == targetEnv)
+            .OrderByDescending(e => e.DeployedAt)
+            .Select(e => e.Version)
+            .FirstOrDefaultAsync(ct);
+
+        // All source-env deploys (id, version, time). Compute first-seen time per version.
+        var sourceEvents = await _db.DeployEvents.AsNoTracking()
+            .Where(e => e.Product == source.Product && e.Service == source.Service
+                     && e.Environment == source.Environment)
+            .Select(e => new { e.Id, e.Version, e.DeployedAt })
+            .ToListAsync(ct);
+
+        var firstSeen = sourceEvents
+            .GroupBy(e => e.Version)
+            .ToDictionary(g => g.Key, g => g.Min(e => e.DeployedAt), StringComparer.OrdinalIgnoreCase);
+
+        // Lower bound: when the target's current version first appeared in source (exclusive).
+        // If the target version never ran in source, include everything up to X.
+        var lowerBound = targetVersion is not null && firstSeen.TryGetValue(targetVersion, out var tp)
+            ? tp
+            : DateTimeOffset.MinValue;
+        var upperBound = firstSeen.TryGetValue(source.Version, out var tx) ? tx : source.DeployedAt;
+
+        var bundleVersions = firstSeen
+            .Where(kv => kv.Value > lowerBound && kv.Value <= upperBound)
+            .Select(kv => kv.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // All event ids for the bundle versions, minus the candidate's own source event (it's the
+        // SourceDeployEventId — the bundle is the *additional* events).
+        return sourceEvents
+            .Where(e => bundleVersions.Contains(e.Version) && e.Id != source.Id)
+            .Select(e => e.Id)
+            .ToList();
     }
 
     private async Task<List<Guid>> SupersedeStalePendingAsync(PromotionCandidate fresh, CancellationToken ct)

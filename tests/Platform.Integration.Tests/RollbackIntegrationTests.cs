@@ -235,7 +235,71 @@ public class RollbackIntegrationTests : IClassFixture<RollbackIntegrationTests.R
         Assert.Contains("2.0", cands);
     }
 
+    [Fact]
+    public async Task RollbackBundle_ReflectsVersionDiff_NotRevertedStories()
+    {
+        // prod=1.1; staging ships 1.3 (FOO-3) then 1.4 (FOO-4). Rolling back to 1.3 should carry
+        // only FOO-3 (1.4 was reverted); a later roll-forward to 1.4 should carry FOO-3 + FOO-4.
+        var product = $"promo-{Guid.NewGuid():N}";
+        await SeedPromotionTopologyAndPolicyAsync(product);
+        await EnableRollbacksAsync();
+        await EnrollAsync(product);
+
+        await IngestAsync(product, "api", "prod", "1.1", Hours(-6));
+        await IngestWithWorkItemAsync(product, "api", "staging", "1.3", "FOO-3", Hours(-5));
+        await IngestWithWorkItemAsync(product, "api", "staging", "1.4", "FOO-4", Hours(-4));
+
+        await RollbackAndLand(product, "api", "1.3", Hours(-1));
+        var keys13 = await CandidateWorkItemKeysAsync(product, "prod", "1.3");
+        Assert.Contains("FOO-3", keys13);
+        Assert.DoesNotContain("FOO-4", keys13); // reverted — must not leak onto the 1.3 promotion
+
+        await RollbackAndLand(product, "api", "1.4", Hours(1));
+        var keys14 = await CandidateWorkItemKeysAsync(product, "prod", "1.4");
+        Assert.Contains("FOO-3", keys14);
+        Assert.Contains("FOO-4", keys14); // roll-forward carries the full diff vs prod
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
+
+    private async Task RollbackAndLand(string product, string service, string toVersion, DateTimeOffset landAt)
+    {
+        var created = await Body(await _admin.PostAsJsonAsync("/api/rollbacks", new
+        {
+            product, targetEnv = "staging", mode = "manual",
+            items = new[] { new { service, toVersion } },
+        }));
+        var id = created.GetProperty("id").GetString();
+        if (created.GetProperty("status").GetString() == "Pending")
+            await _admin.PostAsJsonAsync($"/api/rollbacks/{id}/approve", new { });
+        await IngestAsync(product, service, "staging", toVersion, landAt, isRollback: true);
+    }
+
+    private async Task IngestWithWorkItemAsync(string product, string service, string env,
+        string version, string workItemKey, DateTimeOffset deployedAt)
+    {
+        var resp = await _apiKey.PostAsJsonAsync("/api/deployments/events", new
+        {
+            product, service, environment = env, version, source = "rollback-test", deployedAt, status = "succeeded",
+            references = new[] { new { type = "work-item", key = workItemKey } },
+        });
+        Assert.Equal(HttpStatusCode.Created, resp.StatusCode);
+    }
+
+    private async Task<List<string>> CandidateWorkItemKeysAsync(string product, string targetEnv, string version)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var cand = await db.PromotionCandidates
+            .Where(c => c.Product == product && c.TargetEnv == targetEnv && c.Version == version)
+            .OrderByDescending(c => c.CreatedAt)
+            .FirstAsync();
+        var bundle = new HashSet<Guid>(cand.SupersededSourceEventIds) { cand.SourceDeployEventId };
+        return await db.DeployEventWorkItems
+            .Where(w => bundle.Contains(w.DeployEventId))
+            .Select(w => w.WorkItemKey)
+            .ToListAsync();
+    }
 
     private async Task EnrollAsync(string product)
     {
