@@ -20,6 +20,7 @@ import { ActivityTemplateSettings } from '@/app/settings/ActivityTemplateSetting
 import { FeatureFlagSettings } from '@/app/settings/FeatureFlagSettings';
 import { CatalogSettings } from '@/app/settings/CatalogSettings';
 import { PromotionSettings } from '@/app/settings/PromotionSettings';
+import { RollbackSettings } from '@/app/settings/RollbackSettings';
 import { DeploymentMaintenanceSettings } from '@/app/settings/DeploymentMaintenanceSettings';
 import { ReleaseNoteTemplateSettings } from '@/app/settings/ReleaseNoteTemplateSettings';
 import { ReleaseNotesPage } from '@/app/release-notes/ReleaseNotesPage';
@@ -67,6 +68,7 @@ function App() {
             <Route path="feature-flags" element={<FeatureFlagSettings />} />
             <Route path="catalog" element={<CatalogSettings />} />
             <Route path="promotions" element={<PromotionSettings />} />
+            <Route path="rollbacks" element={<RollbackSettings />} />
             <Route path="deployment-maintenance" element={<DeploymentMaintenanceSettings />} />
             <Route path="release-notes-template" element={<ReleaseNoteTemplateSettings />} />
           </Route>

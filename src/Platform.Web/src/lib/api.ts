@@ -546,6 +546,14 @@ class ApiClient {
     return this.request<{ products: string[] }>(`/rollbacks/enabled-products`);
   }
 
+  // Admin: set the full set of products enrolled in rollbacks.
+  setRollbackEnabledProducts(products: string[]) {
+    return this.request<{ products: string[] }>(`/rollbacks/admin/enabled-products`, {
+      method: 'PUT',
+      body: JSON.stringify({ products }),
+    });
+  }
+
   // ── Feature flags ──────────────────────────────────────────────────────
 
   listFeatureFlags() {
