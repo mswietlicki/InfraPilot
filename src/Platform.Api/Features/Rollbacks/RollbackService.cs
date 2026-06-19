@@ -5,6 +5,7 @@ using Platform.Api.Features.Promotions;
 using Platform.Api.Features.Promotions.Models;
 using Platform.Api.Features.Rollbacks.Models;
 using Platform.Api.Features.Webhooks;
+using Platform.Api.Infrastructure;
 using Platform.Api.Infrastructure.Audit;
 using Platform.Api.Infrastructure.Auth;
 using Platform.Api.Infrastructure.Features;
@@ -245,7 +246,7 @@ public class RollbackService
             new { request.Product, request.TargetEnv, mode = mode.ToString(), itemCount = request.Items.Count, autoApprove });
 
         _logger.LogInformation("Created rollback request {Id} for {Product}/{Env} ({Count} items, {Status})",
-            request.Id, request.Product, request.TargetEnv, request.Items.Count, request.Status);
+            request.Id, LogSanitizer.Clean(request.Product), LogSanitizer.Clean(request.TargetEnv), request.Items.Count, request.Status);
 
         if (request.Status == RollbackStatus.Approved)
             await DispatchWebhookAsync(request, "rollback.approved", ct);
@@ -417,7 +418,7 @@ public class RollbackService
             await _db.SaveChangesAsync(ct);
 
             _logger.LogInformation("Rollback request {Id} → {Status} (item for {Service} landed)",
-                reqId, req.Status, landing.Service);
+                reqId, req.Status, LogSanitizer.Clean(landing.Service));
             if (req.Status == RollbackStatus.RolledBack)
                 await DispatchWebhookAsync(req, "rollback.deployed", ct);
         }

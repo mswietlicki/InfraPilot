@@ -120,7 +120,7 @@ public class PromotionService
         {
             _logger.LogInformation(
                 "Reusing existing candidate {CandidateId} for redeployed version {Version} (no duplicate)",
-                existing.Id, source.Version);
+                existing.Id, LogSanitizer.Clean(source.Version));
             if (existing.Status == PromotionStatus.Pending) await ReevaluateAsync(existing.Id, ct);
             return existing;
         }
