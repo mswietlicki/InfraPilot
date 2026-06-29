@@ -12,7 +12,6 @@ import {
   ExternalLink,
   ArrowRight,
   Inbox,
-  Clock,
   Plus,
   Users,
   X,
