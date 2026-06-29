@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Platform.Api.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using Platform.Api.Infrastructure.Persistence;
 namespace Platform.Api.Migrations.SqlServer
 {
     [DbContext(typeof(SqlServerPlatformDbContext))]
-    partial class SqlServerPlatformDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260626111951_ExternalPromotions")]
+    partial class ExternalPromotions
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -439,14 +442,6 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
 
-                    b.Property<string>("RequirementName")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<string>("StepName")
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
                     b.HasKey("Id");
 
                     b.HasIndex("CandidateId", "ApproverEmail")
@@ -585,18 +580,16 @@ namespace Platform.Api.Migrations.SqlServer
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<string>("ApprovalStepsJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("nvarchar(max)")
-                        .HasDefaultValue("[]");
+                    b.Property<string>("ApproverGroup")
+                        .HasMaxLength(400)
+                        .HasColumnType("nvarchar(400)");
 
-                    b.Property<bool>("AutoApproveOnAllWorkItemsApproved")
+                    b.Property<bool>("AutoApproveOnAllTicketsApproved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
 
-                    b.Property<bool>("AutoApproveWhenNoWorkItems")
+                    b.Property<bool>("AutoApproveWhenNoTickets")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
@@ -608,6 +601,9 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasMaxLength(400)
                         .HasColumnType("nvarchar(400)");
 
+                    b.Property<string>("ExcludeRole")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<string>("Gate")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -615,12 +611,15 @@ namespace Platform.Api.Migrations.SqlServer
                         .HasColumnType("nvarchar(30)")
                         .HasDefaultValue("PromotionOnly");
 
+                    b.Property<int>("MinApprovers")
+                        .HasColumnType("int");
+
                     b.Property<string>("Product")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
-                    b.Property<bool>("RequireAllWorkItemsApproved")
+                    b.Property<bool>("RequireAllTicketsApproved")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
@@ -628,6 +627,11 @@ namespace Platform.Api.Migrations.SqlServer
                     b.Property<string>("Service")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Strategy")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
 
                     b.Property<string>("TargetEnv")
                         .IsRequired()
