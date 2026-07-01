@@ -201,6 +201,49 @@ public class PromotionServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_RequireAllWorkItems_NoApproverStep_StaysPendingUntilWorkItemsApproved()
+    {
+        // Regression: a policy with NO approver step (would otherwise auto-approve) but that requires
+        // all work items approved must NOT auto-approve while it carries an unapproved work item.
+        _db.PromotionPolicies.Add(new PromotionPolicy
+        {
+            Id = Guid.NewGuid(),
+            Product = "acme",
+            Service = null,
+            TargetEnv = "prod",
+            ApprovalSteps = new List<ApprovalStep>(), // empty ⇒ IsAutoApprove
+            RequireAllWorkItemsApproved = true,
+        });
+        _db.SaveChanges();
+
+        var c = await _sut.CreateExternalCandidateAsync(new CreatePromotionDto(
+            Product: "acme", Service: "api", SourceEnv: "staging", TargetEnv: "prod",
+            Version: "v1.2.3", FromRevision: null, ToRevision: null,
+            References: new List<ReferenceDto> { new(Type: "work-item", Key: "ACME-1") },
+            Participants: null));
+
+        Assert.NotNull(c);
+        Assert.Equal(PromotionStatus.Pending, c!.Status); // blocked by the work-item gate, not auto-approved
+
+        // Approving the work item satisfies the gate → the stepless candidate auto-approves on re-eval.
+        _db.WorkItemApprovals.Add(new WorkItemApproval
+        {
+            Id = Guid.NewGuid(),
+            WorkItemKey = "ACME-1",
+            Product = "acme",
+            TargetEnv = "prod",
+            Decision = PromotionDecision.Approved,
+            ApproverEmail = "qa@acme",
+            ApproverName = "QA",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        _db.SaveChanges();
+
+        var reevaluated = await _sut.ReevaluateAsync(c.Id);
+        Assert.Equal(PromotionStatus.Approved, reevaluated.Status);
+    }
+
+    [Fact]
     public async Task Create_WithPolicy_Pending()
     {
         SeedPolicy();

@@ -129,7 +129,18 @@ public class PromotionService
         var autoApproveNoWorkItems = !snapshot.IsAutoApprove
             && snapshot.AutoApproveWhenNoWorkItems
             && payloadWorkItems.Count == 0;
-        var effectiveAutoApprove = snapshot.IsAutoApprove || autoApproveNoWorkItems;
+
+        // A policy can gate on work items (RequireAllWorkItemsApproved, or a WorkItems* gate mode)
+        // even when it has NO human approver step. In that case the candidate must NOT auto-approve
+        // while it still carries unapproved work items — otherwise the "all work items must be
+        // approved" requirement is silently bypassed for stepless policies. Freshly-created work
+        // items have no approvals yet, so their mere presence blocks the born-Approved shortcut; the
+        // gate evaluator promotes the candidate later, once the work items are signed off.
+        var gatesOnWorkItems = snapshot.RequireAllWorkItemsApproved
+            || snapshot.Gate is PromotionGate.WorkItemsOnly or PromotionGate.WorkItemsAndManual;
+        var workItemGateBlocks = gatesOnWorkItems && payloadWorkItems.Count > 0;
+
+        var effectiveAutoApprove = (snapshot.IsAutoApprove || autoApproveNoWorkItems) && !workItemGateBlocks;
 
         var now = DateTimeOffset.UtcNow;
         var candidate = new PromotionCandidate
@@ -854,6 +865,19 @@ public class PromotionService
                 $"Source environment '{candidate.SourceEnv}' no longer runs {candidate.Version} " +
                 $"(now {sourceCurrent}) — promotion is stale until redeployed",
             });
+
+        // The work-item gate applies even when the policy has no human approver requirements — so an
+        // otherwise auto-approve policy still cannot promote while its work items are unapproved.
+        // (Fixes RequireAllWorkItemsApproved / WorkItems* gates being bypassed for stepless policies.)
+        var workItemGate = await GetWorkItemGateAsync(candidate, snapshot, ct);
+        if (workItemGate is not null && !workItemGate.Satisfied)
+        {
+            var pendingCount = workItemGate.Total - workItemGate.Approved;
+            return new GateResult(false, new[]
+            {
+                $"{pendingCount} of {workItemGate.Total} work item(s) awaiting approval",
+            });
+        }
 
         if (snapshot.IsAutoApprove)
             return new GateResult(true, Array.Empty<string>());
