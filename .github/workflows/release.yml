@@ -1,17 +1,20 @@
 name: Release
 
 # Two entry points:
-#  • Automatic — after the CI workflow succeeds on main (every merge). Bumps the patch version.
-#  • Manual   — workflow_dispatch, to cut a minor/major (or an explicit patch) release on demand.
-# In both cases the tag job computes and pushes the next vX.Y.Z tag, then hands off to
-# release-image.yml (via workflow_call) to build and publish the container image. The image build
-# is invoked directly rather than relying on the tag push, because a tag pushed with GITHUB_TOKEN
-# does not itself trigger further workflows.
+#  • Automatic — on every push to main (i.e. every merged PR). Verifies the solution, then bumps
+#    the patch version and cuts a release.
+#  • Manual   — workflow_dispatch, to cut a minor/major (or explicit patch) release on demand.
+#
+# The trigger is push:main (a trusted context — pushing to main requires merge rights) rather than
+# workflow_run, so there is no privileged checkout of untrusted code. The verify job re-runs the
+# test suite on the exact commit being released, so we never tag/publish a broken main. The tag job
+# then pushes the next vX.Y.Z tag and hands off to release-image.yml (via workflow_call) to build
+# and publish the image — invoked directly because a tag pushed with GITHUB_TOKEN does not itself
+# trigger further workflows.
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types:
-      - completed
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       bump:
@@ -34,12 +37,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore InfraPilot.slnx
+
+      - name: Build
+        run: dotnet build InfraPilot.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test InfraPilot.slnx -c Release --no-build --verbosity normal
+
   tag:
-    # Manual dispatch always runs; the automatic path only when CI actually succeeded on main.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+    needs: verify
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.bump.outputs.version }}
@@ -48,13 +67,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          # For the automatic path, tag the exact commit CI validated; for manual, the dispatched ref.
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Compute next version and push tag
         id: bump
         env:
-          # Automatic releases are always a patch bump; manual dispatch picks the part.
+          # Automatic releases (push to main) are always a patch bump; manual dispatch picks the part.
           BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
         run: |
           set -euo pipefail
